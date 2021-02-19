@@ -23,7 +23,7 @@ import (
 
 func TestGC(t *testing.T) {
 	g := NewGomegaWithT(t)
-	l := Make().(*gcledger)
+	l := Make().(*SlowLedger).inner
 	size := 20
 	k1, v1 := getFreshEntries(size)
 	k2, v2 := getFreshEntries(size)

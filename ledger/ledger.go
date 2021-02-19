@@ -21,6 +21,7 @@ package ledger
 import (
 	"encoding/base64"
 	"fmt"
+	"istio.io/pkg/log"
 	"math"
 	"sync"
 	"time"
@@ -56,6 +57,95 @@ type Ledger interface {
 	GetAllPrevious(string) (map[string]string, error)
 }
 
+type operation int
+const (
+	put operation = iota
+	del
+	erase
+)
+type mutation struct {
+	op operation
+	key string
+	result string
+}
+
+type SlowLedger struct{
+	inner *gcledger
+	mu sync.Mutex
+	mutations []mutation
+}
+
+func (sl *SlowLedger) mutate(op operation, key string) {
+	sl.mu.Lock()
+	defer func(){
+		if r := recover(); r != nil {
+			last := sl.mutations[len(sl.mutations)-1]
+			log.Errorf("Encountered panic during record %s(%s): %s\nlast good operation was %s:%s dot: %s",
+				op, key, r, last.op, last.key, last.result)
+		}
+		sl.mu.Unlock()
+	}()
+	m := mutation{
+		op:     op,
+		key:    key,
+	}
+	if op != erase {
+		m.result = sl.inner.inner.tree.DumpToDOT()
+	}
+	sl.mutations = append(sl.mutations, m)
+}
+
+func (sl *SlowLedger) Put(key, value string) (result string, err error) {
+	result, err = sl.inner.Put(key, value)
+	sl.mutate(put, key)
+	return
+}
+
+func (sl *SlowLedger) Delete(key string) (result string, err error) {
+	defer func(){
+		if r := recover(); r != nil {
+			sl.mu.Lock()
+			last := sl.mutations[len(sl.mutations)-1]
+			log.Errorf("Encountered panic during delete %s: %s\nlast good operation was %s:%s dot: %s",
+				key, r, last.op, last.key, last.result)
+			sl.mu.Unlock()
+		}
+	}()
+	result, err = sl.inner.Delete(key)
+	sl.mutate(del, key)
+	return
+}
+
+func (sl *SlowLedger) Get(key string) (result string, err error) {
+	return sl.inner.Get(key)
+}
+
+func (sl *SlowLedger) RootHash() (result string) {
+	return sl.inner.RootHash()
+}
+
+func (sl *SlowLedger) GetPreviousValue(previousRootHash, key string) (result string, err error) {
+	return sl.inner.GetPreviousValue(previousRootHash, key)
+}
+
+func (sl *SlowLedger) EraseRootHash(rootHash string) (err error) {
+	err = sl.inner.EraseRootHash(rootHash)
+	sl.mutate(erase, rootHash)
+	return
+}
+
+func (sl *SlowLedger) Stats() cache.Stats {
+	return sl.inner.Stats()
+}
+
+func (sl *SlowLedger) GetAll() (map[string]string, error) {
+	return sl.inner.GetAll()
+}
+
+func (sl *SlowLedger) GetAllPrevious(s string) (map[string]string, error) {
+	return sl.inner.GetAllPrevious(s)
+}
+
 type smtLedger struct {
 	tree *smt
 	// history tracks the sequence of versions of the ledger for use while erasing
@@ -67,13 +157,15 @@ type smtLedger struct {
 }
 
 func Make() Ledger {
-	return &gcledger{
-		inner: &smtLedger{
-			tree:    newSMT(hasher, nil),
-			history: newHistory(),
-			// keyCache should have ~512kB memory max, each entry is 128 bits = 2^23/2^7 = 2^16
-			keyCache:      byteCache{cache: cache.NewLRU(forever, time.Minute, math.MaxUint16)},
-			firstObserved: make(map[string][]byte),
+	return &SlowLedger{
+		inner: &gcledger{
+			inner: &smtLedger{
+				tree:    newSMT(hasher, nil),
+				history: newHistory(),
+				// keyCache should have ~512kB memory max, each entry is 128 bits = 2^23/2^7 = 2^16
+				keyCache:      byteCache{cache: cache.NewLRU(forever, time.Minute, math.MaxUint16)},
+				firstObserved: make(map[string][]byte),
+			},
 		},
 	}
 }
