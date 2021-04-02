@@ -16,7 +16,6 @@ package ledger
 
 import (
 	"sync"
-	"time"
 
 	"istio.io/pkg/cache"
 )
@@ -24,8 +23,8 @@ import (
 type cacheDB struct {
 	// updatedNodes that have will be flushed to disk
 	updatedNodes byteCache
-	// updatedMux is a lock for updatedNodes
-	updatedMux sync.RWMutex
+	// dupCount includes a count of occurrences of all hashes occurring more than once
+	dupCount sync.Map
 }
 
 // byteCache implements a modified ExpiringCache interface, returning byte arrays
@@ -52,10 +51,10 @@ func (b *byteCache) Get(key hash) (value [][]byte, ok bool) {
 	return
 }
 
-// SetWithExpiration inserts an entry in the cache with a requested expiration time.
-// This will replace any entry with the same key that is already in the cache.
-// The entry will be automatically expunged from the cache at or slightly after the
-// requested expiration time.
-func (b *byteCache) SetWithExpiration(key hash, value [][]byte, expiration time.Duration) {
-	b.cache.SetWithExpiration(key, value, expiration)
+func (b *byteCache) Delete(key hash) {
+	b.cache.Remove(key)
+}
+
+func (c *cacheDB) Stats() cache.Stats {
+	return c.updatedNodes.cache.Stats()
 }
